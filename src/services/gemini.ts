@@ -1,30 +1,267 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import { UserContext, IdeaCard, IdeaGroup } from "../types";
+import { UserContext, IdeaCard, IdeaGroup, UserContextStepResponse, ProblemDefinitionStepResponse, CapabilitiesStepResponse, AICapability } from "../types";
 import { AI_CAPABILITIES } from "../constants";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-export async function generateUserContexts(domain: string): Promise<UserContext[]> {
+export async function generateUserContextStep(domain: string): Promise<UserContextStepResponse> {
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `Analyze the domain: "${domain}". 
-    Identify 6 diverse user segments, personas, or jobs-to-be-done that would benefit from AI integration. 
-    Include a mix of B2C, B2B, and B2B2C. 
-    Return a JSON array of objects with "id", "type" (short name), and "description" (one sentence).`,
+    contents: `You are an AI product system powering Step 1 of an onboarding flow for "AI Matchmaker Studio".
+    
+    DOMAIN: "${domain}"
+    
+    GOAL: Generate structured user contexts grouped by business model type.
+    
+    INSTRUCTIONS:
+    1. Generate user contexts grouped into: B2C, B2B, B2B2C, C2C, D2C, Marketplace / Platform, Internal / Enterprise, Creator Economy, Government / Public Sector.
+    2. For EACH category, generate 3–5 user types relevant to the domain.
+    3. Each user must include: label, description (1 line max), opportunity_signal ("high", "medium", "low"), opportunity_reason (1–2 sentences).
+    
+    Return a JSON object matching the schema.`,
     config: {
-      tools: [{ googleSearch: {} }],
       responseMimeType: "application/json",
       responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            id: { type: Type.STRING },
-            type: { type: Type.STRING },
-            description: { type: Type.STRING },
+        type: Type.OBJECT,
+        properties: {
+          step: { type: Type.STRING, enum: ["user_context"] },
+          selection_rules: {
+            type: Type.OBJECT,
+            properties: {
+              max_selection: { type: Type.NUMBER },
+              cta_label: { type: Type.STRING },
+            },
+            required: ["max_selection", "cta_label"],
           },
-          required: ["id", "type", "description"],
+          user_context_groups: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                category: { type: Type.STRING },
+                users: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      label: { type: Type.STRING },
+                      description: { type: Type.STRING },
+                      opportunity_signal: { type: Type.STRING, enum: ["high", "medium", "low"] },
+                      opportunity_reason: { type: Type.STRING },
+                    },
+                    required: ["id", "label", "description", "opportunity_signal", "opportunity_reason"],
+                  },
+                },
+              },
+              required: ["category", "users"],
+            },
+          },
         },
+        required: ["step", "selection_rules", "user_context_groups"],
+      },
+    },
+  });
+
+  return JSON.parse(response.text);
+}
+
+export async function generateProblemDefinitionStep(domain: string, selectedUser: string, initialProblem?: string): Promise<ProblemDefinitionStepResponse> {
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `You are an AI product system powering Step 2 of an onboarding flow for "AI Matchmaker Studio".
+    
+    DOMAIN: "${domain}"
+    SELECTED USER: "${selectedUser}"
+    ${initialProblem ? `INITIAL PROBLEM: "${initialProblem}"` : ""}
+    
+    GOAL: Generate 6–10 realistic user problems based on the domain and selected user.
+    ${initialProblem ? `Use the INITIAL PROBLEM as the primary inspiration and generate related or more specific problems.` : ""}
+    
+    INSTRUCTIONS:
+    1. Be specific and actionable.
+    2. Reflect real friction, inefficiency, or unmet need.
+    3. Phrased from the user's perspective.
+    4. Avoid vague problems or solutions disguised as problems.
+    5. Each problem must include: problem_statement, severity ("high", "medium", "low"), why_it_matters (1 sentence).
+    
+    Return a JSON object matching the schema.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          step: { type: Type.STRING, enum: ["problem_definition"] },
+          selected_user: { type: Type.STRING },
+          selection_rules: {
+            type: Type.OBJECT,
+            properties: {
+              max_selection: { type: Type.NUMBER },
+              cta_label: { type: Type.STRING },
+            },
+            required: ["max_selection", "cta_label"],
+          },
+          problems: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                problem_statement: { type: Type.STRING },
+                severity: { type: Type.STRING, enum: ["high", "medium", "low"] },
+                why_it_matters: { type: Type.STRING },
+              },
+              required: ["id", "problem_statement", "severity", "why_it_matters"],
+            },
+          },
+          custom_input: {
+            type: Type.OBJECT,
+            properties: {
+              label: { type: Type.STRING },
+              placeholder: { type: Type.STRING },
+            },
+            required: ["label", "placeholder"],
+          },
+        },
+        required: ["step", "selected_user", "selection_rules", "problems", "custom_input"],
+      },
+    },
+  });
+
+  return JSON.parse(response.text);
+}
+
+export async function generateCapabilitiesStep(domain: string, selectedUser: string, selectedProblem: string): Promise<CapabilitiesStepResponse> {
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `You are an AI systems design assistant powering Step 4 of an onboarding flow for "AI Matchmaker Studio".
+    
+    DOMAIN: "${domain}"
+    SELECTED USER: "${selectedUser}"
+    SELECTED PROBLEM: "${selectedProblem}"
+    
+    GOAL: Generate AI capabilities organized into high-level categories and specific capabilities.
+    
+    INSTRUCTIONS:
+    1. Create 6–10 HIGH-LEVEL AI CAPABILITY CATEGORIES (e.g. Predict outcomes, Recommend actions, Generate content, Understand language, Analyze patterns, Automate workflows, Optimize decisions, Perceive the physical world, Simulate scenarios, Retrieve and organize information).
+    2. Categories must be action-based (verb-oriented) and broad.
+    3. For EACH category include: label, explanation (1–2 sentences), how_it_works (non-technical), typical_models (types, not brands), implementation_hint (product team use case).
+    4. Under EACH category, generate 3–6 SPECIFIC CAPABILITIES relevant to the domain/user/problem.
+    5. Each specific capability must include: label (action), description (1 line), effort_level ("low", "medium", "high"), expense_level ("low", "medium", "high").
+    
+    Return a JSON object matching the schema.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          step: { type: Type.STRING, enum: ["capabilities"] },
+          selection_rules: {
+            type: Type.OBJECT,
+            properties: {
+              max_selection: { type: Type.NULL },
+              cta_label: { type: Type.STRING },
+            },
+            required: ["max_selection", "cta_label"],
+          },
+          capability_categories: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: { type: Type.STRING },
+                explanation: { type: Type.STRING },
+                how_it_works: { type: Type.STRING },
+                typical_models: { type: Type.STRING },
+                implementation_hint: { type: Type.STRING },
+                capabilities: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      label: { type: Type.STRING },
+                      description: { type: Type.STRING },
+                      effort_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+                      expense_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+                    },
+                    required: ["id", "label", "description", "effort_level", "expense_level"],
+                  },
+                },
+              },
+              required: ["label", "explanation", "how_it_works", "typical_models", "implementation_hint", "capabilities"],
+            },
+          },
+          custom_capability: {
+            type: Type.OBJECT,
+            properties: {
+              input_label: { type: Type.STRING },
+              placeholder: { type: Type.STRING },
+            },
+            required: ["input_label", "placeholder"],
+          },
+        },
+        required: ["step", "selection_rules", "capability_categories", "custom_capability"],
+      },
+    },
+  });
+
+  return JSON.parse(response.text);
+}
+
+export async function validateCustomCapability(input: string): Promise<{
+  is_valid: boolean;
+  assigned_category?: string;
+  validated_capability?: AICapability;
+  suggested_alternatives?: AICapability[];
+}> {
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `Validate if the following input is a TRUE AI capability: "${input}".
+    
+    INSTRUCTIONS:
+    1. Must describe something AI can DO (verb-based).
+    2. Not a product or vague idea.
+    3. If valid: 
+       - Accept it and assign effort_level and expense_level.
+       - Assign it to one of these categories: Predict outcomes, Recommend actions, Generate content, Understand language, Analyze patterns, Automate workflows, Optimize decisions, Perceive the physical world, Simulate scenarios, Retrieve and organize information.
+    4. If NOT valid: Suggest 3–5 closest valid AI capabilities.
+    
+    Return a JSON object.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          is_valid: { type: Type.BOOLEAN },
+          assigned_category: { type: Type.STRING },
+          validated_capability: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              label: { type: Type.STRING },
+              description: { type: Type.STRING },
+              effort_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+              expense_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+            },
+            required: ["id", "label", "description", "effort_level", "expense_level"],
+          },
+          suggested_alternatives: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                description: { type: Type.STRING },
+                effort_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+                expense_level: { type: Type.STRING, enum: ["low", "medium", "high"] },
+              },
+              required: ["id", "label", "description", "effort_level", "expense_level"],
+            },
+          },
+        },
+        required: ["is_valid"],
       },
     },
   });
